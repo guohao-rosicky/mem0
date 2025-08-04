@@ -1,3 +1,5 @@
+from abc import ABC, abstractmethod
+import datetime
 import logging
 import sqlite3
 import threading
@@ -6,8 +8,38 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+class DBManager(ABC):
 
-class SQLiteManager:
+    @abstractmethod
+    def add_history(
+            self,
+            memory_id: str,
+            old_memory: Optional[str],
+            new_memory: Optional[str],
+            event: str,
+            *,
+            created_at: Optional[str] = None,
+            updated_at: Optional[str] = None,
+            is_deleted: int = 0,
+            actor_id: Optional[str] = None,
+            role: Optional[str] = None,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def get_history(self, memory_id: str) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    def reset(self) -> None:
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        pass
+
+
+class SQLiteManager(DBManager):
     def __init__(self, db_path: str = ":memory:"):
         self.db_path = db_path
         self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -216,3 +248,139 @@ class SQLiteManager:
 
     def __del__(self):
         self.close()
+
+
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    insert,
+    select,
+    text,
+)
+from sqlalchemy.engine.url import make_url
+
+class MySQLManager(DBManager):
+
+    # db_url = "mysql+pymysql://your_username:your_password@your_connect_ip:3306/test_db?charset=utf8mb4"
+    def __init__(self, db_url: str = ":memory:"):
+        self._lock = threading.Lock()
+        self.db_url = db_url
+        url_obj = make_url(db_url)
+        db_name = url_obj.database
+        if not db_name:
+            raise ValueError("No database name specified in db_url for MySQL")
+
+        try:
+            self._engine = create_engine(db_url)
+        except Exception as e:
+            raise ConnectionError(f"Failed to connect to database: {e}")
+
+        self.metadata = MetaData()
+        self.history_table = Table(
+            "history",
+            self.metadata,
+            Column("id", String(36), primary_key=True),
+            Column("memory_id", String(255), index=True),
+            Column("old_memory", String),
+            Column("new_memory", String),
+            Column("new_value", String),
+            Column("event", String(255)),
+            Column("created_at", DateTime),
+            Column("updated_at", DateTime, index=True),
+            Column("is_deleted", Integer, default=0),
+        )
+
+        # create table
+        self._create_history_table()
+
+
+    def _create_history_table(self) -> None:
+        """Create history table if it doesn't exist."""
+        self.metadata.create_all(self._engine, tables=[self.history_table])
+
+
+    def add_history(self, memory_id: str, old_memory: Optional[str], new_memory: Optional[str], event: str, *,
+                    created_at: Optional[str] = None, updated_at: Optional[str] = None, is_deleted: int = 0,
+                    actor_id: Optional[str] = None, role: Optional[str] = None) -> None:
+        """
+                Add a history record to the database.
+                Returns:
+                    The ID of the newly created history record
+                """
+        now = datetime.datetime.now()
+        if created_at is None:
+            created_at = now
+        if updated_at is None:
+            updated_at = now
+        created_at = self._ensure_datetime(created_at)
+        updated_at = self._ensure_datetime(updated_at)
+        record_id = str(uuid.uuid4())
+        with self._lock, self._engine.begin() as conn:
+            stmt = insert(self.history_table).values(
+                id=record_id,
+                memory_id=memory_id,
+                old_memory=old_memory,
+                new_memory=new_memory,
+                new_value=new_memory,
+                event=event,
+                created_at=created_at,
+                updated_at=updated_at,
+                is_deleted=is_deleted,
+            )
+            conn.execute(stmt)
+        return record_id
+
+    def get_history(self, memory_id: str) -> List[Dict[str, Any]]:
+        """
+                Get history records for a specific memory ID.
+                Returns:
+                    List of history records as dictionaries
+                """
+        with self._lock, self._engine.connect() as conn:
+            query = (
+                select(
+                    self.history_table.c.id,
+                    self.history_table.c.memory_id,
+                    self.history_table.c.old_memory,
+                    self.history_table.c.new_memory,
+                    self.history_table.c.event,
+                    self.history_table.c.created_at,
+                    self.history_table.c.updated_at,
+                )
+                .where(
+                    self.history_table.c.memory_id == memory_id,
+                    self.history_table.c.is_deleted == 0,
+                )
+                .order_by(self.history_table.c.updated_at.asc())
+            )
+            result = conn.execute(query)
+            rows = result.fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "memory_id": row[1],
+                    "old_memory": row[2],
+                    "new_memory": row[3],
+                    "event": row[4],
+                    "created_at": row[5],
+                    "updated_at": row[6],
+                }
+                for row in rows
+            ]
+
+    def reset(self) -> None:
+        """Reset database by dropping and recreating the history table."""
+        pass
+
+    def close(self) -> None:
+        """Close database connections properly."""
+        if self._engine:
+            self._engine.dispose()
+            self._engine = None
+

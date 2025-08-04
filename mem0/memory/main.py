@@ -22,7 +22,7 @@ from mem0.configs.prompts import (
 )
 from mem0.memory.base import MemoryBase
 from mem0.memory.setup import mem0_dir, setup_config
-from mem0.memory.storage import SQLiteManager
+from mem0.memory.storage import SQLiteManager, MySQLManager
 from mem0.memory.telemetry import capture_event
 from mem0.memory.utils import (
     get_fact_retrieval_messages,
@@ -129,7 +129,10 @@ class Memory(MemoryBase):
             self.config.vector_store.provider, self.config.vector_store.config
         )
         self.llm = LlmFactory.create(self.config.llm.provider, self.config.llm.config)
-        self.db = SQLiteManager(self.config.history_db_path)
+        if self.config.history_db_path.startswith("mysql"):
+            self.db = MySQLManager(self.config.history_db_path)
+        else:
+            self.db = SQLiteManager(self.config.history_db_path)
         self.collection_name = self.config.vector_store.config.collection_name
         self.api_version = self.config.version
 
