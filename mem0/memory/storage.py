@@ -261,16 +261,14 @@ from sqlalchemy import (
     create_engine,
     insert,
     select,
-    text,
 )
 from sqlalchemy.engine.url import make_url
 
 class MySQLManager(DBManager):
 
-    # db_url = "mysql+pymysql://your_username:your_password@your_connect_ip:3306/test_db?charset=utf8mb4"
-    def __init__(self, db_url: str = ":memory:"):
+    # db_url = "mysql+pymysql://your_username:your_password@your_connect_ip:3306/history_db?charset=utf8mb4"
+    def __init__(self, db_url: str):
         self._lock = threading.Lock()
-        self.db_url = db_url
         url_obj = make_url(db_url)
         db_name = url_obj.database
         if not db_name:
@@ -281,19 +279,23 @@ class MySQLManager(DBManager):
         except Exception as e:
             raise ConnectionError(f"Failed to connect to database: {e}")
 
-        self.metadata = MetaData()
-        self.history_table = Table(
-            "history",
-            self.metadata,
+        self._metadata = MetaData()
+
+        self._history_table_name = "history"
+
+        self._history_table = Table(
+            self._history_table_name,
+            self._metadata,
             Column("id", String(36), primary_key=True),
             Column("memory_id", String(255), index=True),
             Column("old_memory", String),
             Column("new_memory", String),
-            Column("new_value", String),
             Column("event", String(255)),
             Column("created_at", DateTime),
             Column("updated_at", DateTime, index=True),
             Column("is_deleted", Integer, default=0),
+            Column("actor_id", String),
+            Column("role", String),
         )
 
         # create table
@@ -302,7 +304,7 @@ class MySQLManager(DBManager):
 
     def _create_history_table(self) -> None:
         """Create history table if it doesn't exist."""
-        self.metadata.create_all(self._engine, tables=[self.history_table])
+        self._metadata.create_all(self._engine, tables=[self._history_table])
 
 
     def add_history(self, memory_id: str, old_memory: Optional[str], new_memory: Optional[str], event: str, *,
@@ -322,7 +324,7 @@ class MySQLManager(DBManager):
         updated_at = self._ensure_datetime(updated_at)
         record_id = str(uuid.uuid4())
         with self._lock, self._engine.begin() as conn:
-            stmt = insert(self.history_table).values(
+            stmt = insert(self._history_table).values(
                 id=record_id,
                 memory_id=memory_id,
                 old_memory=old_memory,
@@ -345,37 +347,46 @@ class MySQLManager(DBManager):
         with self._lock, self._engine.connect() as conn:
             query = (
                 select(
-                    self.history_table.c.id,
-                    self.history_table.c.memory_id,
-                    self.history_table.c.old_memory,
-                    self.history_table.c.new_memory,
-                    self.history_table.c.event,
-                    self.history_table.c.created_at,
-                    self.history_table.c.updated_at,
+                    self._history_table.c.id,
+                    self._history_table.c.memory_id,
+                    self._history_table.c.old_memory,
+                    self._history_table.c.new_memory,
+                    self._history_table.c.event,
+                    self._history_table.c.created_at,
+                    self._history_table.c.updated_at,
+                    self._history_table.c.is_deleted,
+                    self._history_table.c.actor_id,
+                    self._history_table.c.role,
                 )
                 .where(
-                    self.history_table.c.memory_id == memory_id,
-                    self.history_table.c.is_deleted == 0,
+                    self._history_table.c.memory_id == memory_id,
+                    self._history_table.c.is_deleted == 0,
                 )
-                .order_by(self.history_table.c.updated_at.asc())
+                .order_by(self._history_table.c.updated_at.asc())
             )
             result = conn.execute(query)
             rows = result.fetchall()
             return [
                 {
-                    "id": row[0],
-                    "memory_id": row[1],
-                    "old_memory": row[2],
-                    "new_memory": row[3],
-                    "event": row[4],
-                    "created_at": row[5],
-                    "updated_at": row[6],
+                    "id": r[0],
+                    "memory_id": r[1],
+                    "old_memory": r[2],
+                    "new_memory": r[3],
+                    "event": r[4],
+                    "created_at": r[5],
+                    "updated_at": r[6],
+                    "is_deleted": bool(r[7]),
+                    "actor_id": r[8],
+                    "role": r[9],
                 }
-                for row in rows
+                for r in rows
             ]
 
     def reset(self) -> None:
         """Reset database by dropping and recreating the history table."""
+        with self._engine.connect() as conn:
+            conn.execute(f"DELETE FROM {self._history_table_name}")
+            conn.commit()
         pass
 
     def close(self) -> None:
