@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -7,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+sys.path.append(".")
 from mem0 import Memory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -89,7 +91,7 @@ def register(project_id: str, project_name: Optional[str] = None):
     ## TODO: generate collection name for vector store, generate space for graph store
     return None
 
-@app.post("/v1/unregister", summary="Register the project, user should call the API when remove a project")
+@app.post("/v1/unregister", summary="Unregister the project, user should call the API when remove a project")
 def unregister(project_id: str, project_name: Optional[str] = None): 
     ## TODO: remove project related info, WON'T clear memories the project related
     return None
@@ -166,12 +168,12 @@ def get_all_memories(
     """Retrieve stored memories."""
     if not any([user_id, run_id, agent_id]):
         raise HTTPException(status_code=400, detail="At least one identifier is required.")
-    MEMORY_INSTANCE = getMemInstance(project_id)
     try:
         params = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
+            k: v for k, v in {"project_id": project_id, "member_id": member_id,
+                              "user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
         }
-        return MEMORY_INSTANCE.get_all(**params)
+        return getMemInstance(project_id).get_all(**params)
     except Exception as e:
         logging.exception("Error in get_all_memories:")
         raise HTTPException(status_code=500, detail=str(e))
@@ -183,7 +185,7 @@ def get_memory(
     memory_id: str):
     """Retrieve a specific memory by ID."""
     try:
-        return getMemInstance(project_id).get(memory_id)
+        return getMemInstance(project_id).get(project_id, member_id, memory_id)
     except Exception as e:
         logging.exception("Error in get_memory:")
         raise HTTPException(status_code=500, detail=str(e))
@@ -207,7 +209,7 @@ def update_memory(
     updated_memory: Dict[str, Any]):
     """Update an existing memory."""
     try:
-        return getMemInstance(project_id).update(memory_id=memory_id, data=updated_memory)
+        return getMemInstance(project_id).update(project_id=project_id, member_id=member_id, memory_id=memory_id, data=updated_memory)
     except Exception as e:
         logging.exception("Error in update_memory:")
         raise HTTPException(status_code=500, detail=str(e))
@@ -220,7 +222,7 @@ def memory_history(
     memory_id: str):
     """Retrieve memory history."""
     try:
-        return getMemInstance(project_id).history(memory_id=memory_id)
+        return getMemInstance(project_id).history(project_id = project_id, member_id = member_id, memory_id=memory_id)
     except Exception as e:
         logging.exception("Error in memory_history:")
         raise HTTPException(status_code=500, detail=str(e))
@@ -233,7 +235,7 @@ def delete_memory(
     memory_id: str):
     """Delete a specific memory by ID."""
     try:
-        getMemInstance(project_id).delete(memory_id=memory_id)
+        getMemInstance(project_id).delete(project_id=project_id, member_id=member_id, memory_id=memory_id)
         return {"message": "Memory deleted successfully"}
     except Exception as e:
         logging.exception("Error in delete_memory:")
@@ -243,7 +245,7 @@ def delete_memory(
 @app.delete("/v1/memories", summary="Delete all memories related")
 def delete_all_memories(
     project_id: str,
-    member_id: str,   
+    member_id: str,
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
@@ -253,7 +255,8 @@ def delete_all_memories(
         raise HTTPException(status_code=400, detail="At least one identifier is required.")
     try:
         params = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
+            k: v for k, v in {"project_id": project_id, "member_id": member_id,
+                              "user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
         }
         getMemInstance(project_id).delete_all(**params)
         return {"message": "All relevant memories deleted"}
@@ -263,9 +266,7 @@ def delete_all_memories(
 
 
 @app.post("/v1/reset", summary="Reset all memories")
-def reset_memory(
-    project_id: str,
-    member_id: str):
+def reset_memory(project_id: str):
     """Completely reset stored memories."""
     try:
         getMemInstance(project_id).reset()

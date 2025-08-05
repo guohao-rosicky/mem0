@@ -36,6 +36,8 @@ from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
 
 def _build_filters_and_metadata(
     *,  # Enforce keyword-only arguments
+    project_id: str,
+    member_id: str,
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
     run_id: Optional[str] = None,
@@ -60,6 +62,8 @@ def _build_filters_and_metadata(
     as the actor for storage is typically derived from message content at a later stage.
 
     Args:
+        project_id (str): project identifier
+        member_id (str): member of the project identifier
         user_id (Optional[str]): User identifier, for session scoping.
         agent_id (Optional[str]): Agent identifier, for session scoping.
         run_id (Optional[str]): Run identifier, for session scoping.
@@ -83,6 +87,11 @@ def _build_filters_and_metadata(
 
     # ---------- add all provided session ids ----------
     session_ids_provided = []
+
+    base_metadata_template["__project_id__"] = project_id
+    base_metadata_template["__member_id__"] = member_id
+    effective_query_filters["__project_id__"] = project_id
+    effective_query_filters["__member_id__"] = member_id
 
     if user_id:
         base_metadata_template["user_id"] = user_id
@@ -187,6 +196,8 @@ class Memory(MemoryBase):
 
     def add(
         self,
+        project_id: str,
+        member_id: str,
         messages,
         *,
         user_id: Optional[str] = None,
@@ -203,6 +214,8 @@ class Memory(MemoryBase):
         Adds new memories scoped to a single session id (e.g. `user_id`, `agent_id`, or `run_id`). One of those ids is required.
 
         Args:
+            project_id (str): project identifier
+            member_id (str): member of the project identifier
             messages (str or List[Dict[str, str]]): The message content or list of messages
                 (e.g., `[{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}]`)
                 to be processed and stored.
@@ -228,6 +241,8 @@ class Memory(MemoryBase):
         """
 
         processed_metadata, effective_filters = _build_filters_and_metadata(
+            project_id=project_id,
+            member_id=member_id,
             user_id=user_id,
             agent_id=agent_id,
             run_id=run_id,
@@ -258,7 +273,7 @@ class Memory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer)
+            future1 = executor.submit(self._add_to_vector_store, project_id, member_id, messages, processed_metadata, effective_filters, infer)
             future2 = executor.submit(self._add_to_graph, messages, effective_filters)
 
             concurrent.futures.wait([future1, future2])
@@ -284,7 +299,7 @@ class Memory(MemoryBase):
 
         return {"results": vector_store_result}
 
-    def _add_to_vector_store(self, messages, metadata, filters, infer):
+    def _add_to_vector_store(self, project_id, member_id, messages, metadata, filters, infer):
         if not infer:
             returned_memories = []
             for message_dict in messages:
@@ -336,6 +351,7 @@ class Memory(MemoryBase):
             ],
             response_format={"type": "json_object"},
         )
+        logger.debug(f"llm response: {response}")
 
         try:
             response = remove_code_blocks(response)
@@ -416,6 +432,8 @@ class Memory(MemoryBase):
                         returned_memories.append({"id": memory_id, "memory": action_text, "event": event_type})
                     elif event_type == "UPDATE":
                         self._update_memory(
+                            project_id=project_id,
+                            member_id=member_id,
                             memory_id=temp_uuid_mapping[resp.get("id")],
                             data=action_text,
                             existing_embeddings=new_message_embeddings,
@@ -430,7 +448,7 @@ class Memory(MemoryBase):
                             }
                         )
                     elif event_type == "DELETE":
-                        self._delete_memory(memory_id=temp_uuid_mapping[resp.get("id")])
+                        self._delete_memory(project_id, member_id, memory_id=temp_uuid_mapping[resp.get("id")])
                         returned_memories.append(
                             {
                                 "id": temp_uuid_mapping[resp.get("id")],
@@ -464,11 +482,13 @@ class Memory(MemoryBase):
 
         return added_entities
 
-    def get(self, memory_id):
+    def get(self, project_id: str, member_id: str, memory_id):
         """
         Retrieve a memory by ID.
 
         Args:
+            project_id (str): 
+            member_id (str): 
             memory_id (str): ID of the memory to retrieve.
 
         Returns:
@@ -476,7 +496,11 @@ class Memory(MemoryBase):
         """
         capture_event("mem0.get", self, {"memory_id": memory_id, "sync_type": "sync"})
         memory = self.vector_store.get(vector_id=memory_id)
+        logger.info(f"get memory: {memory}")
         if not memory:
+            return None
+
+        if memory.payload["__project_id__"] != project_id or memory.payload["__member_id__"] != member_id:
             return None
 
         promoted_payload_keys = [
@@ -509,6 +533,8 @@ class Memory(MemoryBase):
 
     def get_all(
         self,
+        project_id: str,
+        member_id: str,
         *,
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
@@ -520,6 +546,8 @@ class Memory(MemoryBase):
         List all memories.
 
         Args:
+            project_id (str): project identifier
+            member_id (str): member of the project identifier
             user_id (str, optional): user id
             agent_id (str, optional): agent id
             run_id (str, optional): run id
@@ -536,6 +564,8 @@ class Memory(MemoryBase):
         """
 
         _, effective_filters = _build_filters_and_metadata(
+            project_id=project_id,
+            member_id=member_id,
             user_id=user_id, agent_id=agent_id, run_id=run_id, input_filters=filters
         )
 
@@ -616,6 +646,8 @@ class Memory(MemoryBase):
 
     def search(
         self,
+        project_id,
+        member_id,
         query: str,
         *,
         user_id: Optional[str] = None,
@@ -628,6 +660,8 @@ class Memory(MemoryBase):
         """
         Searches for memories based on a query
         Args:
+            project_id (str): project identifier
+            member_id (str): member of the project identifier
             query (str): Query to search for.
             user_id (str, optional): ID of the user to search for. Defaults to None.
             agent_id (str, optional): ID of the agent to search for. Defaults to None.
@@ -642,6 +676,8 @@ class Memory(MemoryBase):
                   Example for v1.1+: `{"results": [{"id": "...", "memory": "...", "score": 0.8, ...}]}`
         """
         _, effective_filters = _build_filters_and_metadata(
+            project_id=project_id,
+            member_id=member_id,
             user_id=user_id, agent_id=agent_id, run_id=run_id, input_filters=filters
         )
 
@@ -728,7 +764,7 @@ class Memory(MemoryBase):
 
         return original_memories
 
-    def update(self, memory_id, data):
+    def update(self, project_id, member_id, memory_id, data):
         """
         Update a memory by ID.
 
@@ -743,10 +779,10 @@ class Memory(MemoryBase):
 
         existing_embeddings = {data: self.embedding_model.embed(data, "update")}
 
-        self._update_memory(memory_id, data, existing_embeddings)
+        self._update_memory(project_id, member_id, memory_id, data, existing_embeddings)
         return {"message": "Memory updated successfully!"}
 
-    def delete(self, memory_id):
+    def delete(self, project_id, member_id, memory_id):
         """
         Delete a memory by ID.
 
@@ -754,10 +790,10 @@ class Memory(MemoryBase):
             memory_id (str): ID of the memory to delete.
         """
         capture_event("mem0.delete", self, {"memory_id": memory_id, "sync_type": "sync"})
-        self._delete_memory(memory_id)
+        self._delete_memory(project_id, member_id, memory_id)
         return {"message": "Memory deleted successfully!"}
 
-    def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
+    def delete_all(self, project_id: str, member_id: str, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
         """
         Delete all memories.
 
@@ -767,6 +803,8 @@ class Memory(MemoryBase):
             run_id (str, optional): ID of the run to delete memories for. Defaults to None.
         """
         filters: Dict[str, Any] = {}
+        filters["__project_id__"] = project_id
+        filters["__member_id__"] = member_id
         if user_id:
             filters["user_id"] = user_id
         if agent_id:
@@ -783,7 +821,7 @@ class Memory(MemoryBase):
         capture_event("mem0.delete_all", self, {"keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"})
         memories = self.vector_store.list(filters=filters)[0]
         for memory in memories:
-            self._delete_memory(memory.id)
+            self._delete_memory(project_id, member_id, memory.id)
 
         logger.info(f"Deleted {len(memories)} memories")
 
@@ -792,7 +830,8 @@ class Memory(MemoryBase):
 
         return {"message": "Memories deleted successfully!"}
 
-    def history(self, memory_id):
+    ## TODO: need to filter by project_id and member_id
+    def history(self, project_id, member_id, memory_id):
         """
         Get the history of changes for a memory by ID.
 
@@ -872,7 +911,7 @@ class Memory(MemoryBase):
 
         return result
 
-    def _update_memory(self, memory_id, data, existing_embeddings, metadata=None):
+    def _update_memory(self, project_id, member_id, memory_id, data, existing_embeddings, metadata=None):
         logger.info(f"Updating memory with {data=}")
 
         try:
@@ -880,6 +919,9 @@ class Memory(MemoryBase):
         except Exception:
             logger.error(f"Error getting memory with ID {memory_id} during update.")
             raise ValueError(f"Error getting memory with ID {memory_id}. Please provide a valid 'memory_id'")
+
+        if existing_memory.payload["__project_id__"] != project_id or existing_memory.payload["__member_id__"] != member_id:
+            raise ValueError(f"the provide memory_id: {memory_id} doesn't belong to the project or member")
 
         prev_value = existing_memory.payload.get("data")
 
@@ -926,9 +968,13 @@ class Memory(MemoryBase):
         capture_event("mem0._update_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
         return memory_id
 
-    def _delete_memory(self, memory_id):
+    def _delete_memory(self, project_id, member_id, memory_id):
         logger.info(f"Deleting memory with {memory_id=}")
         existing_memory = self.vector_store.get(vector_id=memory_id)
+
+        if existing_memory.payload["__project_id__"] != project_id or existing_memory.payload["__member_id__"] != member_id:
+            raise ValueError(f"the provide memory_id: {memory_id} doesn't belong to the project or member")
+        
         prev_value = existing_memory.payload["data"]
         self.vector_store.delete(vector_id=memory_id)
         self.db.add_history(
@@ -943,6 +989,8 @@ class Memory(MemoryBase):
         capture_event("mem0._delete_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
         return memory_id
 
+    ## remove project related data
+    ## TODO: delete according to project
     def reset(self):
         """
         Reset the memory store by:
@@ -1032,6 +1080,8 @@ class AsyncMemory(MemoryBase):
 
     async def add(
         self,
+        project_id: str,
+        member_id: str,
         messages,
         *,
         user_id: Optional[str] = None,
@@ -1047,6 +1097,8 @@ class AsyncMemory(MemoryBase):
         Create a new memory asynchronously.
 
         Args:
+            project_id (str): project identifier
+            member_id (str): member of the project identifier
             messages (str or List[Dict[str, str]]): Messages to store in the memory.
             user_id (str, optional): ID of the user creating the memory.
             agent_id (str, optional): ID of the agent creating the memory. Defaults to None.
@@ -1061,6 +1113,8 @@ class AsyncMemory(MemoryBase):
             dict: A dictionary containing the result of the memory addition operation.
         """
         processed_metadata, effective_filters = _build_filters_and_metadata(
+            project_id=project_id,
+            member_id=member_id,
             user_id=user_id, agent_id=agent_id, run_id=run_id, input_metadata=metadata
         )
 
@@ -1352,6 +1406,8 @@ class AsyncMemory(MemoryBase):
 
     async def get_all(
         self,
+        project_id: str,
+        member_id: str,
         *,
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
@@ -1363,6 +1419,8 @@ class AsyncMemory(MemoryBase):
         List all memories.
 
          Args:
+             project_id (str): project identifier
+             member_id (str): member of the project identifier
              user_id (str, optional): user id
              agent_id (str, optional): agent id
              run_id (str, optional): run id
@@ -1379,6 +1437,8 @@ class AsyncMemory(MemoryBase):
         """
 
         _, effective_filters = _build_filters_and_metadata(
+            project_id=project_id,
+            member_id=member_id,
             user_id=user_id, agent_id=agent_id, run_id=run_id, input_filters=filters
         )
 
@@ -1462,6 +1522,8 @@ class AsyncMemory(MemoryBase):
 
     async def search(
         self,
+        project_id: str,
+        member_id: str,
         query: str,
         *,
         user_id: Optional[str] = None,
@@ -1474,6 +1536,8 @@ class AsyncMemory(MemoryBase):
         """
         Searches for memories based on a query
         Args:
+            project_id (str): project identifier
+            member_id (str): member of the project identifier
             query (str): Query to search for.
             user_id (str, optional): ID of the user to search for. Defaults to None.
             agent_id (str, optional): ID of the agent to search for. Defaults to None.
@@ -1489,6 +1553,8 @@ class AsyncMemory(MemoryBase):
         """
 
         _, effective_filters = _build_filters_and_metadata(
+            project_id=project_id,
+            member_id=member_id,
             user_id=user_id, agent_id=agent_id, run_id=run_id, input_filters=filters
         )
 
