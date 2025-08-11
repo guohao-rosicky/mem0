@@ -69,13 +69,32 @@ class NeptuneConfig(BaseModel):
                 "You must provide an endpoint to create a NeptuneServer as either neptune-db://<endpoint> or neptune-graph://<graphid>"
             )
 
+class MilvusNebulaConfig(BaseModel):
+    nebula_address: Optional[str] = Field(None, description="")
+    nebula_port: Optional[int] = Field(None, description="")
+    nebula_max_connection_pool_size: Optional[int] = Field(None, description="")
+    nebula_user: Optional[str] = Field(None, description="")
+    nebula_password: Optional[str] = Field(None, description="")
+    nebula_space: Optional[str] = Field(None, description="")
+    nebula_partition_num: Optional[int] = Field(None, description="")
+    nebula_replica_factor: Optional[int] = Field(None, description="")
+
+    milvus_uri: Optional[str] = Field(None, description="")
+    milvus_collection_name: Optional[str] = Field(None, description="")
+    milvus_vector_dimension: Optional[int] = Field(None, description="")
+    base_label: Optional[bool] = Field(None, description="Whether to use base node label __Entity__ for all entities")
+
+    @model_validator(mode="before")
+    def check_host_port_or_path(cls, values):
+        return values
+
 
 class GraphStoreConfig(BaseModel):
     provider: str = Field(
-        description="Provider of the data store (e.g., 'neo4j', 'memgraph', 'neptune')",
+        description="Provider of the data store (e.g., 'neo4j', 'memgraph', 'neptune', 'milvus_nebula_graph')",
         default="neo4j",
     )
-    config: Union[Neo4jConfig, MemgraphConfig, NeptuneConfig] = Field(
+    config: Union[Neo4jConfig, MemgraphConfig, NeptuneConfig, MilvusNebulaConfig] = Field(
         description="Configuration for the specific data store", default=None
     )
     llm: Optional[LlmConfig] = Field(description="LLM configuration for querying the graph store", default=None)
@@ -92,5 +111,7 @@ class GraphStoreConfig(BaseModel):
             return MemgraphConfig(**v.model_dump())
         elif provider == "neptune":
             return NeptuneConfig(**v.model_dump())
+        elif provider == "milvus_nebula_graph":
+            return MilvusNebulaConfig(**v.model_dump())
         else:
             raise ValueError(f"Unsupported graph store provider: {provider}")

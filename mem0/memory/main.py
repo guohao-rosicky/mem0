@@ -152,6 +152,8 @@ class Memory(MemoryBase):
                 from mem0.memory.memgraph_memory import MemoryGraph
             elif self.config.graph_store.provider == "neptune":
                 from mem0.graphs.neptune.main import MemoryGraph
+            elif self.config.graph_store.provider == "milvus_nebula_graph":
+                from mem0.memory.milvus_nebulagraph_memory import MilvusNebulaGraph as MemoryGraph
             else:
                 from mem0.memory.graph_memory import MemoryGraph
 
